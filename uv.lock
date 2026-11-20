@@ -365,7 +365,7 @@ wheels = [
 
 [[package]]
 name = "fmpy"
-version = "0.3.32"
+version = "0.3.32+lsbus.1"
 source = { editable = "." }
 dependencies = [
     { name = "attrs" },
