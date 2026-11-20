@@ -409,13 +409,18 @@ def connect_bus_system(
     Bus Terminals of the Bus Simulation FMU based on the terminal names:
 
     1. the connections given explicitly are created first
-    2. a Bus Terminal "X" of a Network FMU is connected to the first free Bus Terminal of a
-       Bus Simulation FMU with the same name "X"
-    3. if no such terminal is available, it is connected to the first free Bus Terminal of a
+    2. a Bus Terminal "X" of the Network FMU instance "ecu1" is connected to the Bus Terminal of a
+       Bus Simulation FMU that is named after the network and the instance: "X.ecu1"
+       (or "X_ecu1" or "X-ecu1")
+    3. otherwise it is connected to the first free Bus Terminal of a Bus Simulation FMU with the
+       same name "X"
+    4. if no such terminal is available, it is connected to the first free Bus Terminal of a
        Bus Simulation FMU whose name starts with "X" followed by a separator ("_", "." or "-"),
        e.g. "X_b" (a further channel of the same network)
 
-    Network FMUs are processed in the order in which the FMUs are given.
+    Rule 2 is applied to all Network FMUs before rules 3 and 4, so a terminal that is named after
+    a Network FMU is never taken by another one. For rules 3 and 4 the Network FMUs are processed
+    in the order in which the FMUs are given.
 
     Without a Bus Simulation FMU, two Bus Terminals with the same name are connected directly
     (the layered standard limits direct communication to exactly two Network FMUs).
@@ -500,13 +505,32 @@ def connect_bus_system(
 
     if bus_simulation_terminals:
 
-        # 2. connect the Network FMUs to the Bus Simulation FMU(s)
+        def free_terminals(terminal: BusTerminal) -> list[BusTerminal]:
+            return [t for t in bus_simulation_terminals if t not in used and t.bus_type == terminal.bus_type]
+
+        # 2. connect the Network FMUs to the terminals of the Bus Simulation FMU(s) that are named after them.
+        #    This is done for all Network FMUs first, so a terminal that is named after a Network FMU
+        #    is not taken by another one.
         for terminal in node_terminals:
 
             if terminal in used:
                 continue
 
-            free = [t for t in bus_simulation_terminals if t not in used and t.bus_type == terminal.bus_type]
+            node_names = [terminal.name + s + terminal.component.name for s in CHANNEL_SEPARATORS]
+
+            named = [t for t in free_terminals(terminal) if t.name in node_names]
+
+            if named:
+                connect(terminal, named[0],
+                        f'terminal of "{terminal.component.name}" on network "{terminal.name}"')
+
+        # 3. + 4. connect the remaining terminals by the name of the network
+        for terminal in node_terminals:
+
+            if terminal in used:
+                continue
+
+            free = free_terminals(terminal)
 
             same_name = [t for t in free if t.name == terminal.name]
 
@@ -521,7 +545,7 @@ def connect_bus_system(
 
     else:
 
-        # 3. direct connection of two Network FMUs
+        # direct connection of two Network FMUs
         by_name: dict[str, list[BusTerminal]] = {}
 
         for terminal in node_terminals:

@@ -401,3 +401,68 @@ FMI-LS-BUS
     info = fmu_info(create_bus_fmu(tmp_path / 'invalid.fmu', omit_members=('Rx_Clock',)))
 
     assert '  Problem            Bus Terminal "canbus1" of FMU "invalid" is not a valid Bus Terminal' in info
+
+
+def test_connect_by_instance_name(tmp_path):
+    """ Terminals of the Bus Simulation FMU that are named <network>.<instance> are connected to that instance """
+
+    bus = create_bus_fmu(tmp_path / 'bus.fmu', is_bus_simulation_fmu=True,
+                         terminals=['CANBus1.Node1', 'CANBus1.Node2', 'CANBus2.Node1', 'CANBus2.Node2'])
+
+    node1 = create_bus_fmu(tmp_path / 'Node1.fmu', terminals=['CANBus1', 'CANBus2'])
+    node2 = create_bus_fmu(tmp_path / 'Node2.fmu', terminals=['CANBus1', 'CANBus2'])
+
+    expected = {
+        ('Node1.CANBus1', 'bus.CANBus1.Node1'),
+        ('Node1.CANBus2', 'bus.CANBus2.Node1'),
+        ('Node2.CANBus1', 'bus.CANBus1.Node2'),
+        ('Node2.CANBus2', 'bus.CANBus2.Node2'),
+    }
+
+    # the connections do not depend on the order in which the FMUs are given
+    for fmus in [{'bus': bus, 'Node1': node1, 'Node2': node2}, {'Node2': node2, 'Node1': node1, 'bus': bus}]:
+
+        system = connect_bus_system(fmus)
+
+        assert set(connections(system)) == expected
+        assert system.unconnected_terminals == []
+        assert all(c.reason.startswith('terminal of "Node') for c in system.connections)
+
+    assert connect_bus_system([bus, node2, node1]).connections[0].reason == 'terminal of "Node2" on network "CANBus1"'
+
+    # the instance names are case-sensitive: without a matching name the next free channel is used
+    system = connect_bus_system({'bus': bus, 'node2': node2, 'node1': node1})
+
+    assert connections(system)[0] == ('node2.CANBus1', 'bus.CANBus1.Node1')
+    assert system.connections[0].reason == 'next free channel of network "CANBus1"'
+
+
+@pytest.mark.parametrize('separator', ['.', '_', '-'])
+def test_instance_name_has_priority(tmp_path, separator):
+    """ A terminal that is named after a Network FMU is not taken by another Network FMU """
+
+    named = f'canbus1{separator}ecu2'
+
+    bus = create_bus_fmu(tmp_path / 'bus.fmu', terminals=[named, 'canbus1', 'canbus1_c'], is_bus_simulation_fmu=True)
+
+    fmus = {'bus': bus}
+
+    for name in ['ecu1', 'ecu2', 'ecu3']:
+        fmus[name] = create_bus_fmu(tmp_path / f'{name}.fmu')
+
+    system = connect_bus_system(fmus)
+
+    assert connections(system) == [
+        ('ecu2.canbus1', f'bus.{named}'),    # named after the instance
+        ('ecu1.canbus1', 'bus.canbus1'),     # same terminal name
+        ('ecu3.canbus1', 'bus.canbus1_c'),   # next free channel
+    ]
+
+    # explicit connections still come first
+    system = connect_bus_system(fmus, connections=[('ecu1.canbus1', f'bus.{named}')])
+
+    assert connections(system) == [
+        ('ecu1.canbus1', f'bus.{named}'),
+        ('ecu2.canbus1', 'bus.canbus1'),
+        ('ecu3.canbus1', 'bus.canbus1_c'),
+    ]
