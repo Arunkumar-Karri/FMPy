@@ -299,6 +299,13 @@ class ModelVariable:
 
     shiftCounter: int = field(default=0, repr=False)
 
+    # Binary attributes
+    mimeType: str | None = field(default=None, repr=False)
+    "MIME type of a Binary variable"
+
+    maxSize: int | None = field(default=None, repr=False)
+    "Maximum size of a Binary variable in bytes"
+
     aliases: list[VariableAlias] = field(factory=list, repr=False)
 
     alias: ModelVariable | None = field(default=None, repr=False)
@@ -316,6 +323,38 @@ class Unknown:
     dependenciesKind: list[str] | None = field(default=None, repr=False)
     sourceline: int = field(default=0, repr=False)
     "Line number in the modelDescription.xml"
+
+@define(eq=False)
+class TerminalMemberVariable:
+
+    variableName: str = None
+    memberName: str | None = None
+    variableKind: str = None
+
+
+@define(eq=False)
+class TerminalStreamMemberVariable:
+
+    inStreamMemberName: str = None
+    outStreamMemberName: str = None
+    inStreamVariableName: str = None
+    outStreamVariableName: str = None
+
+
+@define(eq=False)
+class Terminal:
+
+    name: str = None
+    matchingRule: str = None
+    terminalKind: str | None = None
+    description: str | None = field(default=None, repr=False)
+    memberVariables: list[TerminalMemberVariable] = field(factory=list, repr=False)
+    streamMemberVariables: list[TerminalStreamMemberVariable] = field(factory=list, repr=False)
+    terminals: list[Terminal] = field(factory=list, repr=False)
+    "Nested terminals"
+    sourceline: int | None = field(default=None, repr=False)
+    "Line number in the terminalsAndIcons.xml or None if unknown"
+
 
 FMIMajorVersion: TypeAlias = Literal[1, 2, 3]
 VariableNamingConvention: TypeAlias = Literal["flat", "structured"]
@@ -509,6 +548,92 @@ def read_build_description(filename: str | PathLike | IO, validate=True) -> list
             buildConfiguration.sourceFileSets.append(sourceFileSet)
 
     return build_configurations
+
+
+TERMINALS_AND_ICONS_PATHS = ('terminalsAndIcons/terminalsAndIcons.xml', 'icons/terminalsAndIcons.xml')
+
+
+def read_terminals_and_icons(filename: str | PathLike | IO, validate: bool = True) -> list[Terminal]:
+    """ Read the terminals from the terminalsAndIcons.xml of an FMU without extracting it
+
+    Parameters:
+        filename   filename of the FMU or XML file, directory with extracted FMU or file like object
+        validate   whether the terminalsAndIcons.xml should be validated against the XML schema
+
+    returns:
+        terminals  a list of the top-level Terminal objects (empty if the FMU does not define terminals)
+    """
+
+    import zipfile
+    from lxml import etree
+    import os
+
+    tree = None
+
+    if isinstance(filename, (str, PathLike)) and os.path.isdir(filename):  # extracted FMU
+        for path in TERMINALS_AND_ICONS_PATHS:
+            xml_file = os.path.join(filename, path)
+            if os.path.isfile(xml_file):
+                tree = etree.parse(xml_file)
+                break
+    elif isinstance(filename, (str, PathLike)) and os.path.isfile(filename) and str(filename).lower().endswith('.xml'):  # XML file
+        tree = etree.parse(filename)
+    else:  # FMU as path or file like object
+        with zipfile.ZipFile(filename, 'r') as zf:
+            names = zf.namelist()
+            for path in TERMINALS_AND_ICONS_PATHS:
+                if path in names:
+                    with zf.open(path) as xml:
+                        tree = etree.parse(xml)
+                    break
+
+    if tree is None:
+        return []
+
+    root = tree.getroot()
+
+    if validate:
+
+        module_dir, _ = os.path.split(__file__)
+        schema = etree.XMLSchema(file=os.path.join(module_dir, 'schema', 'fmi3', 'fmi3TerminalsAndIcons.xsd'))
+
+        if not schema.validate(root):
+            message = "Failed to validate terminalsAndIcons.xml:"
+            for entry in schema.error_log:
+                message += "\n%s (line %d, column %d): %s" % (entry.level_name, entry.line, entry.column, entry.message)
+            raise Exception(message)
+
+    def read_terminal(element) -> Terminal:
+
+        terminal = Terminal(
+            name=element.get('name'),
+            matchingRule=element.get('matchingRule'),
+            terminalKind=element.get('terminalKind'),
+            description=element.get('description'),
+            sourceline=element.sourceline,
+        )
+
+        for m in element.findall('TerminalMemberVariable'):
+            terminal.memberVariables.append(TerminalMemberVariable(
+                variableName=m.get('variableName'),
+                memberName=m.get('memberName'),
+                variableKind=m.get('variableKind'),
+            ))
+
+        for m in element.findall('TerminalStreamMemberVariable'):
+            terminal.streamMemberVariables.append(TerminalStreamMemberVariable(
+                inStreamMemberName=m.get('inStreamMemberName'),
+                outStreamMemberName=m.get('outStreamMemberName'),
+                inStreamVariableName=m.get('inStreamVariableName'),
+                outStreamVariableName=m.get('outStreamVariableName'),
+            ))
+
+        for t in element.findall('Terminal'):
+            terminal.terminals.append(read_terminal(t))
+
+        return terminal
+
+    return [read_terminal(t) for t in root.findall('Terminals/Terminal')]
 
 
 def read_model_description(filename: str | PathLike | IO, validate: bool = True, validate_variable_names: bool = False, validate_model_structure: bool = False) -> ModelDescription:
@@ -732,6 +857,9 @@ def read_model_description(filename: str | PathLike | IO, validate: bool = True,
     # type definitions
     type_definitions = {None: None}
 
+    # XML elements of the FMI 3 Binary and Clock type definitions by name
+    binary_and_clock_types = {}
+
     if is_fmi1 or is_fmi2:
         # FMI 1 and 2
         for t in root.findall('TypeDefinitions/' + ('Type' if is_fmi1 else 'SimpleType')):
@@ -763,7 +891,15 @@ def read_model_description(filename: str | PathLike | IO, validate: bool = True,
 
             if t.tag not in {'Float32Type', 'Float64Type', 'Int8Type', 'UInt8Type', 'Int16Type', 'UInt16Type', 'Int32Type',
                              'UInt32Type', 'Int64Type', 'UInt64Type', 'BooleanType', 'StringType', 'BinaryType',
-                             'EnumerationType'}:
+                             'EnumerationType', 'ClockType'}:
+                continue
+
+            if t.tag in {'BinaryType', 'ClockType'}:
+                # the Binary and Clock specific attributes are not part of SimpleType
+                simple_type = SimpleType(type=t.tag[:-4], name=t.get('name'), description=t.get('description'))
+                modelDescription.typeDefinitions.append(simple_type)
+                type_definitions[simple_type.name] = simple_type
+                binary_and_clock_types[simple_type.name] = t
                 continue
 
             attrib = dict(t.attrib)
@@ -876,6 +1012,38 @@ def read_model_description(filename: str | PathLike | IO, validate: bool = True,
         else:
             raise Exception('Variable "%s" (line %s) has declaredType="%s" which has not been defined.'
                             % (sv.name, sv.sourceline, declared_type))
+
+        if sv.type in {'Binary', 'Clock'}:
+
+            type_element = binary_and_clock_types.get(declared_type)
+
+            def get_attribute(name):
+                """ Get an attribute from the variable or its declared type """
+                if name in variable.attrib:
+                    return variable.get(name)
+                if type_element is not None:
+                    return type_element.get(name)
+                return None
+
+            def to_int(literal):
+                return None if literal is None else int(literal)
+
+            def to_float(literal):
+                return None if literal is None else float(literal)
+
+            if sv.type == 'Binary':
+                sv.mimeType = get_attribute('mimeType') or 'application/octet-stream'
+                sv.maxSize = to_int(get_attribute('maxSize'))
+            else:
+                sv.intervalVariability = get_attribute('intervalVariability')
+                sv.canBeDeactivated = get_attribute('canBeDeactivated') in {'true', '1'}
+                sv.priority = to_int(get_attribute('priority'))
+                sv.intervalDecimal = to_float(get_attribute('intervalDecimal'))
+                sv.shiftDecimal = to_float(get_attribute('shiftDecimal') or '0')
+                sv.supportsFraction = get_attribute('supportsFraction') in {'true', '1'}
+                sv.resolution = to_int(get_attribute('resolution'))
+                sv.intervalCounter = to_int(get_attribute('intervalCounter'))
+                sv.shiftCounter = to_int(get_attribute('shiftCounter') or '0')
 
         if is_fmi1:
             if sv.causality == 'internal':

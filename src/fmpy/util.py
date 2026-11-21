@@ -533,6 +533,9 @@ Model Info
         if ex.stepSize:
             l.append(f"  Step Size          {ex.stepSize}")
 
+    if md.fmiMajorVersion == 3:
+        l += _ls_bus_info(filename, md)
+
     inputs = []
     outputs = []
 
@@ -564,6 +567,43 @@ Model Info
         l.append('  {:18} {:10} {:>23}  {:8} {}'.format(*args))
 
     return '\n'.join(l)
+
+
+def _ls_bus_info(filename: Union[str, IO], model_description) -> List[str]:
+    """ Get the lines of the FMI-LS-BUS section of fmu_info() (empty if the FMU does not support FMI-LS-BUS) """
+
+    from .ls_bus import read_bus_component, BusTopologyError
+
+    lines = []
+
+    try:
+        component = read_bus_component(name=model_description.modelName, filename=filename, validate=False,
+                                       model_description=model_description)
+    except BusTopologyError as e:
+        return ["", "FMI-LS-BUS", "", f"  Problem            {e}"]
+    except Exception:
+        return []  # e.g. terminalsAndIcons.xml or manifest cannot be read
+
+    if component.manifest is None and not component.bus_terminals:
+        return []
+
+    lines += ["", "FMI-LS-BUS", ""]
+
+    role = 'Bus Simulation FMU' if component.is_bus_simulation_fmu else 'Network FMU'
+
+    lines.append(f"  Role               {role}")
+
+    if component.manifest is not None and component.manifest.version is not None:
+        lines.append(f"  Version            {component.manifest.version}")
+
+    terminals = ', '.join(f'{t.name} ({t.bus_type})' for t in component.bus_terminals)
+
+    lines.append(f"  Bus Terminals      {terminals}")
+
+    for note in component.notes:
+        lines.append(f"  Note               {note}")
+
+    return lines
 
 
 def visual_studio_installation_paths(only_latest=False):

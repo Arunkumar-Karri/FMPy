@@ -167,3 +167,34 @@ jobs:
         }
     - run: python -m pip install pytest nbformat nbclient
     - run: pytest tests
+  # Fork builds carry a local version label, e.g. v0.3.32+lsbus.2. Their wheel is
+  # published as a release, so it can be installed without building the binaries.
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '+')
+    runs-on: ubuntu-22.04
+    needs: [ build-wheel, run-tests ]
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: dist
+        path: dist
+    - run: ls -l dist
+    - env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        cat > notes.md <<EOF
+        FMPy ${GITHUB_REF_NAME#v} with support for the FMI layered standard for network
+        communication (FMI-LS-BUS) in the module \`fmpy.ls_bus\`: the Bus Terminals of
+        Network FMUs are connected to each other or to a Bus Simulation FMU, and the FMUs
+        are co-simulated (CAN and CAN FD).
+
+        Install the wheel with Python 3.10 or newer:
+
+            pip install <downloaded wheel file>
+        EOF
+        gh release create "$GITHUB_REF_NAME" dist/*.whl \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "FMPy ${GITHUB_REF_NAME#v}" \
+          --notes-file notes.md

@@ -14,7 +14,9 @@ project_root = Path(__file__).parent.parent
 with open(project_root / 'pyproject.toml', 'r') as f:
     project_data = toml.load(f)
 
-fmpy_version = project_data['project']['version']
+# the binaries are taken from the official release the version is based on,
+# i.e. without a local version label like "+lsbus.1"
+fmpy_version = project_data['project']['version'].split('+')[0]
 
 with urllib.request.urlopen("https://pypi.org/pypi/fmpy/json") as url:
     pypi_data = json.load(url)

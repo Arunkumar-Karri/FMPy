@@ -83,6 +83,8 @@ def validate_model_description(model_description: ModelDescription, validate_var
 
         # assert required start values (see FMI 2.0 spec, p. 53)
         for v in model_description.modelVariables:
+            if v.type == 'Binary' and v.clocks:
+                continue  # clocked Binary variables (e.g. FMI-LS-BUS Rx_Data) only have a value when their Clock ticks
             if v.type != 'Clock' and (v.initial in {'exact', 'approx'} or v.causality == 'input') and v.start is None:
                 problems.append(f'Variable "{v.name}" (line {v.sourceline}) has no start value.')
 
